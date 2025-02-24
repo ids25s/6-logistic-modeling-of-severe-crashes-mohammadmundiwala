@@ -1,0 +1,34 @@
+---
+title: "Homework Assignment 6"
+author: "Mohammad Mundiwala"
+toc: true
+number-sections: true
+highlight-style: pygments
+engine: jupyter
+format: 
+  html: 
+    code-fold: true
+    html-math-method: katex
+    embed-resources: true
+    self-contained-math: true
+  pdf: 
+    geometry: 
+      - top=30mm
+      - left=20mm
+##  docx: Never, unless to accommodate a collaborator
+---
+
+# NYC Crash severity modeling
+Using the cleaned NYC crash data, merged with zipcode level
+information, we will try to predict the severity of a crash. 
+
+## Train-test Split
+Randomly select 20% of the crashes as testing data and leave the rest 80% as training data.
+## Fitting a logistic model
+### Visualizing results
+Explain the confusion matrix result from the testing data. Compute the F1 score.
+## Fitting a logistic model with $L_1$ regularization
+Select the tuning parameter with 5-fold cross-validation in F1 score
+## Comparing two models
+Compare the performance of the two logistic models in terms of accuracy, precision, recall, F1-score, and AUC.
+
