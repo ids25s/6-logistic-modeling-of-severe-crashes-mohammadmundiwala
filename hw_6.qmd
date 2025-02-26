@@ -20,15 +20,333 @@ format:
 
 # NYC Crash severity modeling
 Using the cleaned NYC crash data, merged with zipcode level
-information, we will try to predict the severity of a crash. 
+information, we will try to predict the severity of a crash. We can
+start, as always, by importing our favorite python packages and then
+reading in our comprehensive dataset as a dataframe called `df`.
 
+```{python} 
+import pandas as pd
+import numpy as np
+df = pd.read_csv('NYC_crash_with_census.csv')
+```
+
+## Setup
+In HW_5 I engineered some covariates that will be re-used in this 
+assignment. By using the known white, black, and asian populations, with
+the total population data, we created percent white, percent black, and
+percent asian covariates. I also created a metric called `num_vehicles`
+which aims to see if the number of vehicles involved in the crash is 
+related to severity. 
+
+I also engineered one new covariate that I did not make in HW_5 called
+`reason`, as per the reccomendation of Professor Yan.
+By inspecting the `contributing_factor_vehicle_1` column, 
+one may notice that many entries are 'Unspecified' or simply missing. 
+It is not unreasonable to think that for the most minor of crashes, it is more 
+likely that the reporting police officier does not fill out a reason.
+If someone does suffer an injury from the crash, it follows that 
+the police officer is more likely to specify a reason for the accident. 
+The dataset is too limited to leverage the diverse set of 
+reasons listed in the reasons column. Instead we create a binary 
+category that is $0$ for no reason listed and $1$ if a reason is listed. 
+
+For a cleaner workflow, I will also create a new dataframe that only 
+contains the information I need for my severity prediction model. This
+is not needed, however it makes things easier when working through larger 
+datasets 
+because the extra, unused columns can become cumbersome.
+
+We implement all of this with the code below:
+
+```{python} 
+df['reason'] = df['contributing_factor_vehicle_1'].apply(
+    lambda x: 0 if pd.isnull(x) or str(x).strip() == 'Unspecified' else 1)
+covariate_vars = ['hour_cat', 'unemployed', 'median_household_income',
+                  'pop_density', 'num_vehicles','median_home_value',
+                    'pct_asian', 'pct_black','pct_white',
+                    'grad_degree_holders', 'severe', 'reason']
+covariate_df = df[covariate_vars]
+```
+
+### `reason` vs `severe`
+I was interested to see if `reason` was at all correlated with `severe` or if 
+the assumption we made is invalid. We can do this using
+the methods of HW_5 by posing the null hypothesis:
+
+**H0: The presence of a reason for the crash is independent of the severity** 
+
+```{python} 
+from scipy.stats import chi2_contingency
+contingency = pd.crosstab(covariate_df['reason'], covariate_df['severe'])
+chi2, p, dof, expected = chi2_contingency(contingency)
+print(f"Chi^2 Statistic: {chi2:.3f}")
+print(f"p-value: {p*100:.3f}%")
+```
+
+From the output of the $\chi^2$ test, we see that $p<<5\%$! We can
+comfortably reject the null hypothesis and say that our assumption is,
+at least, not bad. Let's go! 
 ## Train-test Split
-Randomly select 20% of the crashes as testing data and leave the rest 80% as training data.
-## Fitting a logistic model
+Using the `sklean` package that we used in HW_5, we can import the
+`model_selection` module. It is not very difficult to write a simple
+code that does just this using `random` and list indexing in python, 
+but using this pre-built `train_test_split`function is easy. We can
+input the percent of data we would like to keep seperate for testing
+and specify `random_state` so that our code is repeatable. We now have
+two dataframes that we will use for the rest of the assignment:
+`train_cov` and `test_cov`. Yay!
+
+```{python} 
+from sklearn.model_selection import train_test_split
+train_cov, test_cov = train_test_split(covariate_df, 
+                                       test_size=0.2, 
+                                       random_state=1234)
+```
+
+## Fitting a simple logistic model
+To fit a logistic model, we can use `statsmodels`, as we did in HW_5.
+I will create five logistic regression models with `logit`
+that are trained on various sets of the covariates
+that we aquired or engineered. The five models are summarized in Table
+@tbl-models.
+
+| Model   | Covariates Considered                                      | Total|
+|---------|--------------------------------------------------------------|---|
+| Model 0 | Hour of Day                                                   | 1|
+| Model 1 | Hour of Day, <br> Number of Vehicles                      |2 |
+| Model 2 | % White, % Black, % Asian, Pop. Density, <br>
+ Unemployed, Grad Degree Holders, Median Income                          | 7 |
+| Model 3 | Reason for Crash | 1|
+| Model 4 | % White, % Black, % Asian Pop. Density, 
+<br> Unemployed, Grad Degree Holders, Median Income 
+<br> Hour of Day, Number of Vehicles, Reason for Crash             | 10|
+
+: Summary of the different logistic models' training sets {#tbl-models}
+
+Model 0 serves as a control group of sorts because the hour of the day seems
+like the best covariate in the dataset. Model 1 uses both hour of day and the
+number of vehicles that were in the crash. Model 2 includes just demographic
+data that was aquired from the census API. Model 3 is trained soley on the 
+`reason` predictor that we generated in the previous section. Finally, the most
+comprehensive model, Model 4, is trained on all the covariates available! woah..
+
+```{python}
+import statsmodels.formula.api as smf 
+model0 = smf.logit("severe ~ C(hour_cat)", data=train_cov).fit()
+model1 = smf.logit("severe ~ C(hour_cat)  + num_vehicles", data=train_cov).fit()
+model2 = smf.logit("severe ~ pct_white + pct_black + pct_asian" 
+                   "+ pop_density + unemployed + grad_degree_holders" 
+                   "+ median_household_income", data=train_cov).fit()
+model3 = smf.logit("severe ~ reason", data=train_cov).fit()
+model4 = smf.logit("severe ~ pct_white + pct_black + pct_asian" 
+                   "+ pop_density + unemployed + grad_degree_holders" 
+                   "+ median_household_income + C(hour_cat) + num_vehicles"
+                   "+ reason", data=train_cov).fit()
+```
+
 ### Visualizing results
-Explain the confusion matrix result from the testing data. Compute the F1 score.
+Explain the confusion matrix result from the testing data. 
+```{python}
+#| label: model4_results_1
+#| fig-cap: "Confusion matrix of Model 4, which was trained on every covariate 
+# available, with a set threshold of 0.5"
+#| fig-align: "center" 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, accuracy_score
+
+TH = 0.5 ## Probability > TH --> pred = 1; else 0
+y_pred_prob = model4.predict(test_cov)
+y_pred = (y_pred_prob >= TH).astype(int)
+y_true = test_cov["severe"].astype(int)
+cm = confusion_matrix(y_true, y_pred)
+acc = accuracy_score(y_true, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
+plt.title(f'Model 4 Test Results (Accuracy = {acc*100:.1f}%)')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+```
+
+Hmm. The results for Model 4 are quite terrible. How do the other models perform
+compared to Model 4? We plot the same way as we did for Model 4 so I surpress
+the code to save space. 
+
+```{python} 
+#| echo: false
+#| label: all_models_results_1
+#| fig-cap: "Model 0 (Control), Model 1 (Crash data), Model 2 (Demographics data),
+# and Model 3 (Reason for crash) are compared with accuracy presented above"
+#| fig-align: "center"
+
+models = [model0, model1, model2, model3]
+fig, axes = plt.subplots(2, 2, figsize=(7, 7))
+axes = axes.flatten()
+for i, model in enumerate(models):
+    y_pred_prob = model.predict(test_cov)
+    y_pred = (y_pred_prob >= TH).astype(int)
+    y_true = test_cov["severe"].astype(int)
+    cm = confusion_matrix(y_true, y_pred)
+    acc = accuracy_score(y_true, y_pred)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=axes[i])
+    axes[i].set_title(f"Model {i}   Acc= {acc*100:.1f}%", fontsize=11)
+axes[0].set_ylabel("True")
+axes[2].set_ylabel("True")
+axes[2].set_xlabel("Predicted")
+axes[3].set_xlabel("Predicted")
+fig.subplots_adjust(right=0.9)
+cbar_ax = fig.add_axes([0.92, 0.15, 0.03, 0.7])
+cb = fig.colorbar(axes[-1].collections[0], cax=cbar_ax)
+cb.outline.set_edgecolor('white')
+plt.show()
+```
+
+It is pretty clear to see that these results are not useful. For binary 
+classification, achieving 50% accuracy is as good as guessing. Since no model
+appears to have even a minor advantage, we can feel confident is concluding that
+these covariates are not useful in predicting severity of the crash, at least
+using simple logistic regression. Perhaps there is opportunity for a more 
+computational
+approach, like neural networks, for a prediction model. 
+
+### Classification metrics
+The most common classification metrics: Recall, Precision, F1, and Accuracy
+are presented in Table @tbl-metrics below.
+
+| Model | Recall | Precision | F1 Score | Accuracy |
+| --- | --- | --- | --- | --- |
+| Model 0 | 0.31 | 0.46 | 0.37 | 54.2% |
+| Model 1 | 0.29 | 0.48 | 0.36 | 55.5% |
+| Model 2 | 0.02 | 0.30 | 0.04 | 55.1% |
+| Model 3 | 0.00 | 0.00 | 0.00 | 56.5% |
+| Model 4 | 0.27 | 0.50 | 0.35 | 56.5% |
+
+: Classification metrics for all models {#tbl-metrics}
+
+Looking at model 3, we notice something very interesting! We see a great example
+of why Accuracy metric on its own simply does not tell the full story. While 
+Model 3 is tied for the "best" performance, we can see that such a result was
+simply due to a trivial model: Every crash is not severe. Basically, we did
+a whole lot of work to find out that 56.5% of the crashes are not severe. Sad
+
+### Threshold study
+Our prediction models will predict a crash is severe if the the prediction 
+probability is $>50%$. It may be the case that a threshold of $50%$ is smart. In
+many cases, for a prediction model, we may want far more model certainty before
+making an active claim, such as "this crash is severe". A good example of this
+is spam email detection. You want to be as certain as possible when claiming an
+email is spam because otherwise the user will not recieve necessary messages.
+
+In this parametric study, I sweep across many different thresholds to see if
+there is a better threshold that would increase accuracy. I plot the results
+of this sweep and find that a threshold value near 50% does make the most sense.
+
+
+```{python} 
+#| echo: false
+#| label: th_sweep_1
+#| fig-cap: "Threshold sweep study for all five logistic models"
+#| fig-align: "center"
+models = [model0, model1, model2, model3, model4]
+colors = ["#dc828f", "#f7ce76", "#e8d6cf", "#8c7386", "#9c9359"]
+thresholds = np.arange(0.05, 0.9, 0.01)
+plt.figure(figsize=(6, 4))
+for i, model in enumerate(models):
+    accs = []
+    y_true = test_cov["severe"].astype(int)
+    y_pred_prob = model.predict(test_cov)
+    for th in thresholds:
+        y_pred = (y_pred_prob >= th).astype(int)
+        accs.append(accuracy_score(y_true, y_pred) * 100)
+    plt.plot(thresholds, accs, 
+             label=f"Model {i}",
+             linewidth=2.5,
+             alpha=0.7, 
+             color=colors[i])
+
+# Baseline: assume all crashes are not severe (accuracy = 56.5%)
+plt.axhline(y=56.5, 
+            color="black", 
+            linestyle="--", 
+            linewidth=4, 
+            alpha=0.4,
+            zorder = -1, 
+            label="Bound")
+plt.axhline(y=(100 - 56.5), 
+            color="black", 
+            linestyle="--", 
+            linewidth=4, 
+            alpha=0.4,
+            zorder = -1)
+
+plt.title("Threshold Sweep", fontsize=13)
+plt.xlabel("Threshold", fontsize=12)
+plt.ylabel("Accuracy (%)", fontsize=12)
+plt.legend(fontsize=12)
+plt.xticks([0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80])
+plt.yticks([45, 50, 55, 60])
+plt.show()
+```
+
+All the models follow a similar trend, as expected, bounded by the percent of 
+severe and non severe crashes, 43.5% and 56.5%, respectively. Let's optimize the
+threshold value to maximize accuracy. 
+
+```{python} 
+#| echo: false
+#| label: th_sweep_2
+#| fig-cap: "A closer look at the threshold sweep"
+#| fig-align: "center"
+models = [model0, model1, model2, model3, model4]
+colors = ["#dc828f", "#f7ce76", "#e8d6cf", "#8c7386", "#9c9359"]
+thresholds = np.arange(0.45, 0.5, 0.001)
+plt.figure(figsize=(6, 4))
+for i, model in enumerate(models):
+    accs = []
+    y_true = test_cov["severe"].astype(int)
+    y_pred_prob = model.predict(test_cov)
+    for th in thresholds:
+        y_pred = (y_pred_prob >= th).astype(int)
+        accs.append(accuracy_score(y_true, y_pred) * 100)
+    plt.plot(thresholds, accs, 
+             label=f"Model {i}",
+             linewidth=2.5,
+             alpha=0.7, 
+             color=colors[i])
+
+# Baseline: assume all crashes are not severe (accuracy = 56.5%)
+plt.axhline(y=56.5, 
+            color="black", 
+            linestyle="--", 
+            linewidth=4, 
+            alpha=0.4,
+            zorder = -1, 
+            label="Baseline")
+
+plt.title("Threshold Sweep", fontsize=13)
+plt.xlabel("Threshold", fontsize=12)
+plt.ylabel("Accuracy (%)", fontsize=12)
+plt.legend(fontsize=12, ncols=2)
+plt.xticks([0.45, 0.475, 0.5])
+plt.yticks([50, 55, 60])
+plt.show()
+```
+
+Model 4, which was trained on all covariates, had a peak accuracy of 58.8% which
+is marginally better than simply predicting all crashes are not severe. Terrible
+results, frankly.
+
 ## Fitting a logistic model with $L_1$ regularization
 Select the tuning parameter with 5-fold cross-validation in F1 score
+```{python} 
+
+```
+```{python} 
+
+```
 ## Comparing two models
 Compare the performance of the two logistic models in terms of accuracy, precision, recall, F1-score, and AUC.
+```{python} 
+
+```
 
