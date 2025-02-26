@@ -85,7 +85,8 @@ print(f"p-value: {p*100:.3f}%")
 
 From the output of the $\chi^2$ test, we see that $p<<5\%$! We can
 comfortably reject the null hypothesis and say that our assumption is,
-at least, not bad. Let's go! 
+at least, not bad. Let's go!
+
 ## Train-test Split
 Using the `sklean` package that we used in HW_5, we can import the
 `model_selection` module. It is not very difficult to write a simple
@@ -113,13 +114,11 @@ that we aquired or engineered. The five models are summarized in Table
 | Model   | Covariates Considered                                      | Total|
 |---------|--------------------------------------------------------------|---|
 | Model 0 | Hour of Day                                                   | 1|
-| Model 1 | Hour of Day, <br> Number of Vehicles                      |2 |
-| Model 2 | % White, % Black, % Asian, Pop. Density, <br>
- Unemployed, Grad Degree Holders, Median Income                          | 7 |
+| Model 1 | Hour of Day,  Number of Vehicles                      |2 |
+| Model 2 | % White, % Black, % Asian, Pop. Density, Unemployed, Grad Degree Holders, Median Income                          | 7 |
 | Model 3 | Reason for Crash | 1|
-| Model 4 | % White, % Black, % Asian Pop. Density, 
-<br> Unemployed, Grad Degree Holders, Median Income 
-<br> Hour of Day, Number of Vehicles, Reason for Crash             | 10|
+| Model 4 | % White, % Black, % Asian Pop. Density, Unemployed, Grad Degree Holders, 
+Median Income, Hour of Day, Number of Vehicles, Reason for Crash             | 10|
 
 : Summary of the different logistic models' training sets {#tbl-models}
 
@@ -148,8 +147,7 @@ model4 = smf.logit("severe ~ pct_white + pct_black + pct_asian"
 Explain the confusion matrix result from the testing data. 
 ```{python}
 #| label: model4_results_1
-#| fig-cap: "Confusion matrix of Model 4, which was trained on every covariate 
-# available, with a set threshold of 0.5"
+#| fig-cap: "Confusion matrix of Model 4, which was trained on every covariate available, with a set threshold of 0.5"
 #| fig-align: "center" 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -175,8 +173,7 @@ the code to save space.
 ```{python} 
 #| echo: false
 #| label: all_models_results_1
-#| fig-cap: "Model 0 (Control), Model 1 (Crash data), Model 2 (Demographics data),
-# and Model 3 (Reason for crash) are compared with accuracy presented above"
+#| fig-cap: "Model 0 (Control), Model 1 (Crash data), Model 2 (Demographics data) and Model 3 (Reason for crash) are compared with accuracy presented above"
 #| fig-align: "center"
 
 models = [model0, model1, model2, model3]
@@ -215,11 +212,11 @@ are presented in Table @tbl-metrics below.
 
 | Model | Recall | Precision | F1 Score | Accuracy |
 | --- | --- | --- | --- | --- |
-| Model 0 | 0.31 | 0.46 | 0.37 | 54.2% |
-| Model 1 | 0.29 | 0.48 | 0.36 | 55.5% |
-| Model 2 | 0.02 | 0.30 | 0.04 | 55.1% |
-| Model 3 | 0.00 | 0.00 | 0.00 | 56.5% |
-| Model 4 | 0.27 | 0.50 | 0.35 | 56.5% |
+| Model 0 | 0.75 | 0.46 | 0.57 | 50.2% |
+| Model 1 | 0.72 | 0.45 | 0.55 | 48.8% |
+| Model 2 | 0.81 | 0.42 | 0.55 | 43.2% |
+| Model 3 | 0.84 | 0.50 | 0.62 | 56.1% |
+| Model 4 | 0.72 | 0.47 | 0.57 | 53.2% |
 
 : Classification metrics for all models {#tbl-metrics}
 
@@ -227,7 +224,11 @@ Looking at model 3, we notice something very interesting! We see a great example
 of why Accuracy metric on its own simply does not tell the full story. While 
 Model 3 is tied for the "best" performance, we can see that such a result was
 simply due to a trivial model: Every crash is not severe. Basically, we did
-a whole lot of work to find out that 56.5% of the crashes are not severe. Sad
+a whole lot of work to find out that 56.5% of the crashes are not severe. All 
+models are fit such that they predict the majority of cases are not severe. In
+the confusion matrix figures, we see dark blue on the left column and light
+blue on the right column, showing the distribution of data is not even. Ideally
+we would see dark blue along the diagonal but we do not see that. Sad
 
 ### Threshold study
 Our prediction models will predict a crash is severe if the the prediction 
@@ -337,6 +338,12 @@ is marginally better than simply predicting all crashes are not severe. Terrible
 results, frankly.
 
 ## Fitting a logistic model with $L_1$ regularization
+L1 regularization forces many of the regression coefficients to zero, 
+which simplifies the model. This naturally helps prevent overfitting since it 
+ignores unneeded parameters that may learn psuedo-trends. It's also useful to
+use when we suspect multiple redundant variables in the data, which we may have.
+The demographic data, for instance, may not be entirely useful. 
+
 Select the tuning parameter with 5-fold cross-validation in F1 score
 ```{python} 
 
