@@ -64,7 +64,7 @@ df['reason'] = df['contributing_factor_vehicle_1'].apply(
 covariate_vars = ['hour_cat', 'unemployed', 'median_household_income',
                   'pop_density', 'num_vehicles','median_home_value',
                     'pct_asian', 'pct_black','pct_white',
-                    'grad_degree_holders', 'severe', 'reason']
+                    'grad_degree_holders', 'severe', 'reason', 'hour']
 covariate_df = df[covariate_vars]
 ```
 
@@ -151,8 +151,8 @@ Explain the confusion matrix result from the testing data.
 #| fig-align: "center" 
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, accuracy_score
-
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
 TH = 0.5 ## Probability > TH --> pred = 1; else 0
 y_pred_prob = model4.predict(test_cov)
 y_pred = (y_pred_prob >= TH).astype(int)
@@ -344,16 +344,195 @@ ignores unneeded parameters that may learn psuedo-trends. It's also useful to
 use when we suspect multiple redundant variables in the data, which we may have.
 The demographic data, for instance, may not be entirely useful. 
 
-Select the tuning parameter with 5-fold cross-validation in F1 score
-```{python} 
+```{python}
+#| echo: false
+import statsmodels.api as sm
+features = ["hour", "pct_white", "pct_black", "pct_asian", "pop_density", 
+            "unemployed", "grad_degree_holders", "median_household_income", 
+            "num_vehicles", "reason"]
+
+# Split both features and target together to ensure alignment
+train_cov_L1, test_cov_L1, y_train, y_test = train_test_split(
+                                                        covariate_df[features], 
+                                                        covariate_df["severe"], 
+                                                        test_size=0.2, 
+                                                        random_state=1234)
+```
+
+### Five-fold cross validation
+When training and testing prediction models, it is important that we do not
+present results that are 'lucky'. Just like experiments have multiple trials,
+we must train our model multiple times to ensure nothing is awry. One way to do
+this is with n-fold cross validation. In the previous section, we train on
+80% of the data and test on the other 20%. Now we still train on 80% and test on
+20% but we validate our model 5 times such that all samples (crashes) have been 
+used as validation cases, in training. The mean results from these 5 models will 
+give us a more thorough understanding of the prediction capabilities. This is 
+useful for us because we want to optimize $\alpha$ regularization parameter. 
+The only way to know which $\alpha$ value is best is to try many and see which
+does the best!. 
+
+We can write a pretty simple function that takes our training data and provides
+the validation and training portions back to the model. We will use this in the
+next section.
+
+```{python}
+def five_fold_cv(X, y):
+    n = len(X)
+    fold_size = n // 5
+    indices = np.arange(n)
+    np.random.shuffle(indices)
+    for i in range(5):
+        val_idx = indices[i*fold_size:(i+1)*fold_size]
+        train_idx = np.setdiff1d(indices, val_idx)
+        yield train_idx, val_idx
 
 ```
-```{python} 
 
+### Optimize for F1
+As I mentioned in the previous code, $\alpha$ is a regularization parameter 
+that is used in $L_1$ model we are developing. Since we don't know which value
+to make $\alpha$, we can either guess and check or have some fun. I choose the
+latter.
+
+Things to note about the code block below: Note that we use a threshold of $0.48$ for the following
+predictions. We determined that this would be best from the
+previous parameter study we performed. Next, we test 50 different values for alpha 
+that are within 0 and 1 to see which would be best. We train 5 models 
+(5-fold CV) 50 different times for 50 different alphas. thats 250 logisitic 
+regression models! For what exactly??! *for truth*
+
+```{python}
+#| echo: false
+import warnings
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+```
+
+```{python}
+alphas = np.linspace(0,1,50)
+best_alpha = 0
+best_score = 0
+for alpha in alphas:
+    scores = []
+    for train_idx, val_idx in five_fold_cv(train_cov_L1, y_train):
+        X_t, X_v = train_cov_L1.iloc[train_idx], covariate_df[features].iloc[val_idx]
+        y_t, y_v = y_train.iloc[train_idx], y_train.iloc[val_idx]
+        model = sm.Logit(y_t, X_t).fit_regularized(L1_wt=1.0, alpha=alpha, disp=0)
+        preds = (model.predict(X_v) > 0.48).astype(int)
+        scores.append(f1_score(y_v, preds))
+    mean_f1 = np.mean(scores)
+    if mean_f1 > best_score:
+        best_score = mean_f1
+        best_alpha = alpha
+print('BEST ALPHA: ',best_alpha)
+print('BEST F1 SCORE ACHIEVED: ', best_score)
+```
+
+We can optimize `alpha` ($\alpha$) with any target we choose, but since 
+accuracy is not a great metric in this situation, we can use **F1** score. It is
+fair to say that the higher the F1 score, the better our model is, since it 
+accounts for recall and precision. With the value of `best_alpha`, we will train
+a model on all of the training data and then test it on the 20% test set we 
+never see in training. 
+In the code below, we use `Logit` from `statmodels` again. This time we can
+use `.fit_regularized` to set our model using $L_1$. I re-train model 4 from
+before for this comparison using all the covariates we have. 
+
+```{python} 
+model_L1 = sm.Logit(y_train, train_cov_L1).fit_regularized(L1_wt =1.0, 
+                                                              alpha=best_alpha,
+                                                              disp=0)
+model4 = sm.Logit(y_train, train_cov_L1).fit()
+# print(model_L1.summary())  # verbose output
+# predict with L1
+y_prob_L1 = model_L1.predict(test_cov_L1)
+y_pred_L1 = (y_prob_L1 >= 0.48).astype(int)
+#Predict without L1
+y_prob4 = model4.predict(test_cov_L1)
+y_pred4 = (y_prob4 >= 0.48).astype(int)
+```
+
+We can now evaluate the two different models, with and without $L_1$ 
+regularization, using the metric scores from `sklearn.metrics`. This time we
+will also include the `AUC` score. AUC stands for Area Under the (ROC) Curve and
+is also useful in binary classification like this. 
+
+```{python} 
+from sklearn.metrics import roc_auc_score
+# evaluate models
+acc_L1 = accuracy_score(y_test, y_pred_L1)
+prec_L1 = precision_score(y_test, y_pred_L1)
+rec_L1 = recall_score(y_test, y_pred_L1)
+f1_L1 = f1_score(y_test, y_pred_L1)
+auc_L1 = roc_auc_score(y_test, y_prob_L1)
+
+acc_4 = accuracy_score(y_test, y_pred4)
+prec_4 = precision_score(y_test, y_pred4)
+rec_4 = recall_score(y_test, y_pred4)
+f1_4 = f1_score(y_test, y_pred4)
+auc_4 = roc_auc_score(y_test, y_prob4)
 ```
 ## Comparing two models
-Compare the performance of the two logistic models in terms of accuracy, precision, recall, F1-score, and AUC.
-```{python} 
 
+| Model   | Recall  | Precision | F1 Score | Accuracy | AUC    |
+|---------|---------|-----------|----------|----------|--------|
+| Model 4 | 0.2672  | 0.5556    | 0.3608   | 58.80%   | 0.5366 |
+| L1      | 0.2595  | 0.5484    | 0.3523   | 58.47%   | 0.5351 |
+
+: Summary of test results comparing logistic models trained with and without $L_1$ regularization {#tbl-metrics-2}
+
+Finally, w can compare the performance of the two logistic models 
+in terms of accuracy, precision, recall, F1-score, and AUC. These
+metrics are summarized in @tbl-metrics-2, 
+and together help to tell the whole story. Unfortunately, this 
+story is a tragedy. A tale of desperation, failure, and defeat. 
+
+```{python}
+#| echo: false
+#| label: model4_results_2
+#| fig-cap: "Confusion matrix of Model 4, which was trained on every covariate available, with a set threshold of 0.48"
+#| fig-align: "center" 
+
+y_pred_prob = model4.predict(test_cov_L1)
+y_pred = (y_pred_prob >= 0.48).astype(int)
+y_true = y_test.astype(int)
+cm = confusion_matrix(y_true, y_pred)
+acc = accuracy_score(y_true, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
+plt.title(f'Model 4 Test Results (Accuracy = {acc_4*100:.1f}%)')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
 ```
+
+```{python}
+#| echo: false
+#| label: modelL2_results
+#| fig-cap: "Confusion matrix of Model_L1 using L1 regularization and an optimized alpha value and a severe threshold of 0.48"
+#| fig-align: "center" 
+
+y_pred_prob = model_L1.predict(test_cov_L1)
+y_pred = (y_pred_prob >= 0.48).astype(int)
+y_true = y_test.astype(int)
+cm = confusion_matrix(y_true, y_pred)
+acc = accuracy_score(y_true, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
+plt.title(f'Model w L1 Test Results (Accuracy = {acc_L1*100:.1f}%)')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+```
+
+We see that the results for both models are nearly identical, hence the results
+from @tbl-metrics-2 are also very similar. This accuracy of 58% is strictly 
+due to the imbalance of samples in the two classes, severe and non-severe. If
+they were equally represented in the data set (50-50), the accuracy would be
+50% as well; in other words no better than random guessing.
+
+
+**fin**
+
 
