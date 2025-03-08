@@ -1,0 +1,17 @@
+*.png
+*.pdf
+*.html
+hw_6_files/
+*.quarto_ipynb
+*.ipynb
+*.jpg
+/.quarto/
+/_book/
+/_freeze/
+/.ids-f24-venv/
+
+/templates/
+nyc_crashes_cleaned_02.csv
+nyc_crashes_original.csv
+
+*.html

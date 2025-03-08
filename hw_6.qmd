@@ -1,0 +1,538 @@
+---
+title: "Homework Assignment 6"
+author: "Mohammad Mundiwala"
+toc: true
+number-sections: true
+highlight-style: pygments
+engine: jupyter
+format: 
+  html: 
+    code-fold: true
+    html-math-method: katex
+    embed-resources: true
+    self-contained-math: true
+  pdf: 
+    geometry: 
+      - top=30mm
+      - left=20mm
+##  docx: Never, unless to accommodate a collaborator
+---
+
+# NYC Crash severity modeling
+Using the cleaned NYC crash data, merged with zipcode level
+information, we will try to predict the severity of a crash. We can
+start, as always, by importing our favorite python packages and then
+reading in our comprehensive dataset as a dataframe called `df`.
+
+```{python} 
+import pandas as pd
+import numpy as np
+df = pd.read_csv('NYC_crash_with_census.csv')
+```
+
+## Setup
+In HW_5 I engineered some covariates that will be re-used in this 
+assignment. By using the known white, black, and asian populations, with
+the total population data, we created percent white, percent black, and
+percent asian covariates. I also created a metric called `num_vehicles`
+which aims to see if the number of vehicles involved in the crash is 
+related to severity. 
+
+I also engineered one new covariate that I did not make in HW_5 called
+`reason`, as per the reccomendation of Professor Yan.
+By inspecting the `contributing_factor_vehicle_1` column, 
+one may notice that many entries are 'Unspecified' or simply missing. 
+It is not unreasonable to think that for the most minor of crashes, it is more 
+likely that the reporting police officier does not fill out a reason.
+If someone does suffer an injury from the crash, it follows that 
+the police officer is more likely to specify a reason for the accident. 
+The dataset is too limited to leverage the diverse set of 
+reasons listed in the reasons column. Instead we create a binary 
+category that is $0$ for no reason listed and $1$ if a reason is listed. 
+
+For a cleaner workflow, I will also create a new dataframe that only 
+contains the information I need for my severity prediction model. This
+is not needed, however it makes things easier when working through larger 
+datasets 
+because the extra, unused columns can become cumbersome.
+
+We implement all of this with the code below:
+
+```{python} 
+df['reason'] = df['contributing_factor_vehicle_1'].apply(
+    lambda x: 0 if pd.isnull(x) or str(x).strip() == 'Unspecified' else 1)
+covariate_vars = ['hour_cat', 'unemployed', 'median_household_income',
+                  'pop_density', 'num_vehicles','median_home_value',
+                    'pct_asian', 'pct_black','pct_white',
+                    'grad_degree_holders', 'severe', 'reason', 'hour']
+covariate_df = df[covariate_vars]
+```
+
+### `reason` vs `severe`
+I was interested to see if `reason` was at all correlated with `severe` or if 
+the assumption we made is invalid. We can do this using
+the methods of HW_5 by posing the null hypothesis:
+
+**H0: The presence of a reason for the crash is independent of the severity** 
+
+```{python} 
+from scipy.stats import chi2_contingency
+contingency = pd.crosstab(covariate_df['reason'], covariate_df['severe'])
+chi2, p, dof, expected = chi2_contingency(contingency)
+print(f"Chi^2 Statistic: {chi2:.3f}")
+print(f"p-value: {p*100:.3f}%")
+```
+
+From the output of the $\chi^2$ test, we see that $p<<5\%$! We can
+comfortably reject the null hypothesis and say that our assumption is,
+at least, not bad. Let's go!
+
+## Train-test Split
+Using the `sklean` package that we used in HW_5, we can import the
+`model_selection` module. It is not very difficult to write a simple
+code that does just this using `random` and list indexing in python, 
+but using this pre-built `train_test_split`function is easy. We can
+input the percent of data we would like to keep seperate for testing
+and specify `random_state` so that our code is repeatable. We now have
+two dataframes that we will use for the rest of the assignment:
+`train_cov` and `test_cov`. Yay!
+
+```{python} 
+from sklearn.model_selection import train_test_split
+train_cov, test_cov = train_test_split(covariate_df, 
+                                       test_size=0.2, 
+                                       random_state=1234)
+```
+
+## Fitting a simple logistic model
+To fit a logistic model, we can use `statsmodels`, as we did in HW_5.
+I will create five logistic regression models with `logit`
+that are trained on various sets of the covariates
+that we aquired or engineered. The five models are summarized in Table
+@tbl-models.
+
+| Model   | Covariates Considered                                      | Total|
+|---------|--------------------------------------------------------------|---|
+| Model 0 | Hour of Day                                                   | 1|
+| Model 1 | Hour of Day,  Number of Vehicles                      |2 |
+| Model 2 | % White, % Black, % Asian, Pop. Density, Unemployed, Grad Degree Holders, Median Income                          | 7 |
+| Model 3 | Reason for Crash | 1|
+| Model 4 | % White, % Black, % Asian Pop. Density, Unemployed, Grad Degree Holders, 
+Median Income, Hour of Day, Number of Vehicles, Reason for Crash             | 10|
+
+: Summary of the different logistic models' training sets {#tbl-models}
+
+Model 0 serves as a control group of sorts because the hour of the day seems
+like the best covariate in the dataset. Model 1 uses both hour of day and the
+number of vehicles that were in the crash. Model 2 includes just demographic
+data that was aquired from the census API. Model 3 is trained soley on the 
+`reason` predictor that we generated in the previous section. Finally, the most
+comprehensive model, Model 4, is trained on all the covariates available! woah..
+
+```{python}
+import statsmodels.formula.api as smf 
+model0 = smf.logit("severe ~ C(hour_cat)", data=train_cov).fit()
+model1 = smf.logit("severe ~ C(hour_cat)  + num_vehicles", data=train_cov).fit()
+model2 = smf.logit("severe ~ pct_white + pct_black + pct_asian" 
+                   "+ pop_density + unemployed + grad_degree_holders" 
+                   "+ median_household_income", data=train_cov).fit()
+model3 = smf.logit("severe ~ reason", data=train_cov).fit()
+model4 = smf.logit("severe ~ pct_white + pct_black + pct_asian" 
+                   "+ pop_density + unemployed + grad_degree_holders" 
+                   "+ median_household_income + C(hour_cat) + num_vehicles"
+                   "+ reason", data=train_cov).fit()
+```
+
+### Visualizing results
+Explain the confusion matrix result from the testing data. 
+```{python}
+#| label: model4_results_1
+#| fig-cap: "Confusion matrix of Model 4, which was trained on every covariate available, with a set threshold of 0.5"
+#| fig-align: "center" 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
+TH = 0.5 ## Probability > TH --> pred = 1; else 0
+y_pred_prob = model4.predict(test_cov)
+y_pred = (y_pred_prob >= TH).astype(int)
+y_true = test_cov["severe"].astype(int)
+cm = confusion_matrix(y_true, y_pred)
+acc = accuracy_score(y_true, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
+plt.title(f'Model 4 Test Results (Accuracy = {acc*100:.1f}%)')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+```
+
+Hmm. The results for Model 4 are quite terrible. How do the other models perform
+compared to Model 4? We plot the same way as we did for Model 4 so I surpress
+the code to save space. 
+
+```{python} 
+#| echo: false
+#| label: all_models_results_1
+#| fig-cap: "Model 0 (Control), Model 1 (Crash data), Model 2 (Demographics data) and Model 3 (Reason for crash) are compared with accuracy presented above"
+#| fig-align: "center"
+
+models = [model0, model1, model2, model3]
+fig, axes = plt.subplots(2, 2, figsize=(7, 7))
+axes = axes.flatten()
+for i, model in enumerate(models):
+    y_pred_prob = model.predict(test_cov)
+    y_pred = (y_pred_prob >= TH).astype(int)
+    y_true = test_cov["severe"].astype(int)
+    cm = confusion_matrix(y_true, y_pred)
+    acc = accuracy_score(y_true, y_pred)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, ax=axes[i])
+    axes[i].set_title(f"Model {i}   Acc= {acc*100:.1f}%", fontsize=11)
+axes[0].set_ylabel("True")
+axes[2].set_ylabel("True")
+axes[2].set_xlabel("Predicted")
+axes[3].set_xlabel("Predicted")
+fig.subplots_adjust(right=0.9)
+cbar_ax = fig.add_axes([0.92, 0.15, 0.03, 0.7])
+cb = fig.colorbar(axes[-1].collections[0], cax=cbar_ax)
+cb.outline.set_edgecolor('white')
+plt.show()
+```
+
+It is pretty clear to see that these results are not useful. For binary 
+classification, achieving 50% accuracy is as good as guessing. Since no model
+appears to have even a minor advantage, we can feel confident is concluding that
+these covariates are not useful in predicting severity of the crash, at least
+using simple logistic regression. Perhaps there is opportunity for a more 
+computational
+approach, like neural networks, for a prediction model. 
+
+### Classification metrics
+The most common classification metrics: Recall, Precision, F1, and Accuracy
+are presented in Table @tbl-metrics below.
+
+| Model | Recall | Precision | F1 Score | Accuracy |
+| --- | --- | --- | --- | --- |
+| Model 0 | 0.75 | 0.46 | 0.57 | 50.2% |
+| Model 1 | 0.72 | 0.45 | 0.55 | 48.8% |
+| Model 2 | 0.81 | 0.42 | 0.55 | 43.2% |
+| Model 3 | 0.84 | 0.50 | 0.62 | 56.1% |
+| Model 4 | 0.72 | 0.47 | 0.57 | 53.2% |
+
+: Classification metrics for all models {#tbl-metrics}
+
+Looking at model 3, we notice something very interesting! We see a great example
+of why Accuracy metric on its own simply does not tell the full story. While 
+Model 3 is tied for the "best" performance, we can see that such a result was
+simply due to a trivial model: Every crash is not severe. Basically, we did
+a whole lot of work to find out that 56.5% of the crashes are not severe. All 
+models are fit such that they predict the majority of cases are not severe. In
+the confusion matrix figures, we see dark blue on the left column and light
+blue on the right column, showing the distribution of data is not even. Ideally
+we would see dark blue along the diagonal but we do not see that. Sad
+
+### Threshold study
+Our prediction models will predict a crash is severe if the the prediction 
+probability is $>50%$. It may be the case that a threshold of $50%$ is smart. In
+many cases, for a prediction model, we may want far more model certainty before
+making an active claim, such as "this crash is severe". A good example of this
+is spam email detection. You want to be as certain as possible when claiming an
+email is spam because otherwise the user will not recieve necessary messages.
+
+In this parametric study, I sweep across many different thresholds to see if
+there is a better threshold that would increase accuracy. I plot the results
+of this sweep and find that a threshold value near 50% does make the most sense.
+
+
+```{python} 
+#| echo: false
+#| label: th_sweep_1
+#| fig-cap: "Threshold sweep study for all five logistic models"
+#| fig-align: "center"
+models = [model0, model1, model2, model3, model4]
+colors = ["#dc828f", "#f7ce76", "#e8d6cf", "#8c7386", "#9c9359"]
+thresholds = np.arange(0.05, 0.9, 0.01)
+plt.figure(figsize=(6, 4))
+for i, model in enumerate(models):
+    accs = []
+    y_true = test_cov["severe"].astype(int)
+    y_pred_prob = model.predict(test_cov)
+    for th in thresholds:
+        y_pred = (y_pred_prob >= th).astype(int)
+        accs.append(accuracy_score(y_true, y_pred) * 100)
+    plt.plot(thresholds, accs, 
+             label=f"Model {i}",
+             linewidth=2.5,
+             alpha=0.7, 
+             color=colors[i])
+
+# Baseline: assume all crashes are not severe (accuracy = 56.5%)
+plt.axhline(y=56.5, 
+            color="black", 
+            linestyle="--", 
+            linewidth=4, 
+            alpha=0.4,
+            zorder = -1, 
+            label="Bound")
+plt.axhline(y=(100 - 56.5), 
+            color="black", 
+            linestyle="--", 
+            linewidth=4, 
+            alpha=0.4,
+            zorder = -1)
+
+plt.title("Threshold Sweep", fontsize=13)
+plt.xlabel("Threshold", fontsize=12)
+plt.ylabel("Accuracy (%)", fontsize=12)
+plt.legend(fontsize=12)
+plt.xticks([0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80])
+plt.yticks([45, 50, 55, 60])
+plt.show()
+```
+
+All the models follow a similar trend, as expected, bounded by the percent of 
+severe and non severe crashes, 43.5% and 56.5%, respectively. Let's optimize the
+threshold value to maximize accuracy. 
+
+```{python} 
+#| echo: false
+#| label: th_sweep_2
+#| fig-cap: "A closer look at the threshold sweep"
+#| fig-align: "center"
+models = [model0, model1, model2, model3, model4]
+colors = ["#dc828f", "#f7ce76", "#e8d6cf", "#8c7386", "#9c9359"]
+thresholds = np.arange(0.45, 0.5, 0.001)
+plt.figure(figsize=(6, 4))
+for i, model in enumerate(models):
+    accs = []
+    y_true = test_cov["severe"].astype(int)
+    y_pred_prob = model.predict(test_cov)
+    for th in thresholds:
+        y_pred = (y_pred_prob >= th).astype(int)
+        accs.append(accuracy_score(y_true, y_pred) * 100)
+    plt.plot(thresholds, accs, 
+             label=f"Model {i}",
+             linewidth=2.5,
+             alpha=0.7, 
+             color=colors[i])
+
+# Baseline: assume all crashes are not severe (accuracy = 56.5%)
+plt.axhline(y=56.5, 
+            color="black", 
+            linestyle="--", 
+            linewidth=4, 
+            alpha=0.4,
+            zorder = -1, 
+            label="Baseline")
+
+plt.title("Threshold Sweep", fontsize=13)
+plt.xlabel("Threshold", fontsize=12)
+plt.ylabel("Accuracy (%)", fontsize=12)
+plt.legend(fontsize=12, ncols=2)
+plt.xticks([0.45, 0.475, 0.5])
+plt.yticks([50, 55, 60])
+plt.show()
+```
+
+Model 4, which was trained on all covariates, had a peak accuracy of 58.8% which
+is marginally better than simply predicting all crashes are not severe. Terrible
+results, frankly.
+
+## Fitting a logistic model with $L_1$ regularization
+L1 regularization forces many of the regression coefficients to zero, 
+which simplifies the model. This naturally helps prevent overfitting since it 
+ignores unneeded parameters that may learn psuedo-trends. It's also useful to
+use when we suspect multiple redundant variables in the data, which we may have.
+The demographic data, for instance, may not be entirely useful. 
+
+```{python}
+#| echo: false
+import statsmodels.api as sm
+features = ["hour", "pct_white", "pct_black", "pct_asian", "pop_density", 
+            "unemployed", "grad_degree_holders", "median_household_income", 
+            "num_vehicles", "reason"]
+
+# Split both features and target together to ensure alignment
+train_cov_L1, test_cov_L1, y_train, y_test = train_test_split(
+                                                        covariate_df[features], 
+                                                        covariate_df["severe"], 
+                                                        test_size=0.2, 
+                                                        random_state=1234)
+```
+
+### Five-fold cross validation
+When training and testing prediction models, it is important that we do not
+present results that are 'lucky'. Just like experiments have multiple trials,
+we must train our model multiple times to ensure nothing is awry. One way to do
+this is with n-fold cross validation. In the previous section, we train on
+80% of the data and test on the other 20%. Now we still train on 80% and test on
+20% but we validate our model 5 times such that all samples (crashes) have been 
+used as validation cases, in training. The mean results from these 5 models will 
+give us a more thorough understanding of the prediction capabilities. This is 
+useful for us because we want to optimize $\alpha$ regularization parameter. 
+The only way to know which $\alpha$ value is best is to try many and see which
+does the best!. 
+
+We can write a pretty simple function that takes our training data and provides
+the validation and training portions back to the model. We will use this in the
+next section.
+
+```{python}
+def five_fold_cv(X, y):
+    n = len(X)
+    fold_size = n // 5
+    indices = np.arange(n)
+    np.random.shuffle(indices)
+    for i in range(5):
+        val_idx = indices[i*fold_size:(i+1)*fold_size]
+        train_idx = np.setdiff1d(indices, val_idx)
+        yield train_idx, val_idx
+
+```
+
+### Optimize for F1
+As I mentioned in the previous code, $\alpha$ is a regularization parameter 
+that is used in $L_1$ model we are developing. Since we don't know which value
+to make $\alpha$, we can either guess and check or have some fun. I choose the
+latter.
+
+Things to note about the code block below: Note that we use a threshold of $0.48$ for the following
+predictions. We determined that this would be best from the
+previous parameter study we performed. Next, we test 50 different values for alpha 
+that are within 0 and 1 to see which would be best. We train 5 models 
+(5-fold CV) 50 different times for 50 different alphas. thats 250 logisitic 
+regression models! For what exactly??! *for truth*
+
+```{python}
+#| echo: false
+import warnings
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+```
+
+```{python}
+alphas = np.linspace(0,1,50)
+best_alpha = 0
+best_score = 0
+for alpha in alphas:
+    scores = []
+    for train_idx, val_idx in five_fold_cv(train_cov_L1, y_train):
+        X_t, X_v = train_cov_L1.iloc[train_idx], covariate_df[features].iloc[val_idx]
+        y_t, y_v = y_train.iloc[train_idx], y_train.iloc[val_idx]
+        model = sm.Logit(y_t, X_t).fit_regularized(L1_wt=1.0, alpha=alpha, disp=0)
+        preds = (model.predict(X_v) > 0.48).astype(int)
+        scores.append(f1_score(y_v, preds))
+    mean_f1 = np.mean(scores)
+    if mean_f1 > best_score:
+        best_score = mean_f1
+        best_alpha = alpha
+print('BEST ALPHA: ',best_alpha)
+print('BEST F1 SCORE ACHIEVED: ', best_score)
+```
+
+We can optimize `alpha` ($\alpha$) with any target we choose, but since 
+accuracy is not a great metric in this situation, we can use **F1** score. It is
+fair to say that the higher the F1 score, the better our model is, since it 
+accounts for recall and precision. With the value of `best_alpha`, we will train
+a model on all of the training data and then test it on the 20% test set we 
+never see in training. 
+In the code below, we use `Logit` from `statmodels` again. This time we can
+use `.fit_regularized` to set our model using $L_1$. I re-train model 4 from
+before for this comparison using all the covariates we have. 
+
+```{python} 
+model_L1 = sm.Logit(y_train, train_cov_L1).fit_regularized(L1_wt =1.0, 
+                                                              alpha=best_alpha,
+                                                              disp=0)
+model4 = sm.Logit(y_train, train_cov_L1).fit()
+# print(model_L1.summary())  # verbose output
+# predict with L1
+y_prob_L1 = model_L1.predict(test_cov_L1)
+y_pred_L1 = (y_prob_L1 >= 0.48).astype(int)
+#Predict without L1
+y_prob4 = model4.predict(test_cov_L1)
+y_pred4 = (y_prob4 >= 0.48).astype(int)
+```
+
+We can now evaluate the two different models, with and without $L_1$ 
+regularization, using the metric scores from `sklearn.metrics`. This time we
+will also include the `AUC` score. AUC stands for Area Under the (ROC) Curve and
+is also useful in binary classification like this. 
+
+```{python} 
+from sklearn.metrics import roc_auc_score
+# evaluate models
+acc_L1 = accuracy_score(y_test, y_pred_L1)
+prec_L1 = precision_score(y_test, y_pred_L1)
+rec_L1 = recall_score(y_test, y_pred_L1)
+f1_L1 = f1_score(y_test, y_pred_L1)
+auc_L1 = roc_auc_score(y_test, y_prob_L1)
+
+acc_4 = accuracy_score(y_test, y_pred4)
+prec_4 = precision_score(y_test, y_pred4)
+rec_4 = recall_score(y_test, y_pred4)
+f1_4 = f1_score(y_test, y_pred4)
+auc_4 = roc_auc_score(y_test, y_prob4)
+```
+## Comparing two models
+
+| Model   | Recall  | Precision | F1 Score | Accuracy | AUC    |
+|---------|---------|-----------|----------|----------|--------|
+| Model 4 | 0.2672  | 0.5556    | 0.3608   | 58.80%   | 0.5366 |
+| L1      | 0.2595  | 0.5484    | 0.3523   | 58.47%   | 0.5351 |
+
+: Summary of test results comparing logistic models trained with and without $L_1$ regularization {#tbl-metrics-2}
+
+Finally, w can compare the performance of the two logistic models 
+in terms of accuracy, precision, recall, F1-score, and AUC. These
+metrics are summarized in @tbl-metrics-2, 
+and together help to tell the whole story. Unfortunately, this 
+story is a tragedy. A tale of desperation, failure, and defeat. 
+
+```{python}
+#| echo: false
+#| label: model4_results_2
+#| fig-cap: "Confusion matrix of Model 4, which was trained on every covariate available, with a set threshold of 0.48"
+#| fig-align: "center" 
+
+y_pred_prob = model4.predict(test_cov_L1)
+y_pred = (y_pred_prob >= 0.48).astype(int)
+y_true = y_test.astype(int)
+cm = confusion_matrix(y_true, y_pred)
+acc = accuracy_score(y_true, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
+plt.title(f'Model 4 Test Results (Accuracy = {acc_4*100:.1f}%)')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+```
+
+```{python}
+#| echo: false
+#| label: modelL2_results
+#| fig-cap: "Confusion matrix of Model_L1 using L1 regularization and an optimized alpha value and a severe threshold of 0.48"
+#| fig-align: "center" 
+
+y_pred_prob = model_L1.predict(test_cov_L1)
+y_pred = (y_pred_prob >= 0.48).astype(int)
+y_true = y_test.astype(int)
+cm = confusion_matrix(y_true, y_pred)
+acc = accuracy_score(y_true, y_pred)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=True)
+plt.title(f'Model w L1 Test Results (Accuracy = {acc_L1*100:.1f}%)')
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.show()
+```
+
+We see that the results for both models are nearly identical, hence the results
+from @tbl-metrics-2 are also very similar. This accuracy of 58% is strictly 
+due to the imbalance of samples in the two classes, severe and non-severe. If
+they were equally represented in the data set (50-50), the accuracy would be
+50% as well; in other words no better than random guessing.
+
+
+**fin**
+
+
